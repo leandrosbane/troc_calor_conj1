@@ -49,30 +49,44 @@ fn main() {
     let fluxo = interface_flux(&sistema, 0);
     println!("Fluxo entre os nós 0 e 1: {:?}", fluxo);
 
-    let (novo_meio1, novo_meio2) = sistema.iteracao();
+    let mut novo_meio1 = sistema.meio1.temperaturas.clone();
+    let mut novo_meio2 = sistema.meio2.temperaturas.clone();
+
+    sistema.iteracao(&mut novo_meio1, &mut novo_meio2);
 
     println!("{:?}", &novo_meio1[495..500]);
     println!("{:?}", &novo_meio2[495..500]);
 
-    for i in 0..1000000 {
-        let (novo_meio1, novo_meio2) = sistema.iteracao();
+    let mut novas_temperaturas_meio1 = sistema.meio1.temperaturas.clone();
+    let mut novas_temperaturas_meio2 = sistema.meio2.temperaturas.clone();
 
-        sistema.meio1.temperaturas = novo_meio1;
-        sistema.meio2.temperaturas = novo_meio2;
+    for i in 0..1_000_000 {
+        sistema.iteracao(&mut novas_temperaturas_meio1, &mut novas_temperaturas_meio2);
 
-        println!(
-            "iteração {:?}, começo: {:?} fim: {:?}",
-            i,
-            &sistema.meio1.temperaturas[0..5],
-            &sistema.meio2.temperaturas[495..500]
+        std::mem::swap(
+            &mut sistema.meio1.temperaturas,
+            &mut novas_temperaturas_meio1,
+        );
+        std::mem::swap(
+            &mut sistema.meio2.temperaturas,
+            &mut novas_temperaturas_meio2,
         );
 
-        //print da interface
-        println!("Fe: {:?}", &sistema.meio1.temperaturas[495..500]);
-        println!("Cu: {:?}", &sistema.meio2.temperaturas[0..5]);
+        //colocar um if nesse println pra não fazer 1 MELHAO de prints!!
+        if i % 100000 == 0 {
+            println!(
+                "iteração {:?}, começo: {:?} fim: {:?}",
+                i,
+                &sistema.meio1.temperaturas[0..5],
+                &sistema.meio2.temperaturas[495..500],
+            );
+            //print da interface
+            println!("Fe: {:?}", &sistema.meio1.temperaturas[495..500]);
+            println!("Cu: {:?}", &sistema.meio2.temperaturas[0..5]);
+        }
 
         // parte de plotagem que só colei aqui sem entender bulhufas
-        if i % 10000 == 0 {
+        if i % 100000 == 0 {
             root.fill(&WHITE).unwrap();
 
             let mut chart = ChartBuilder::on(&root)
@@ -182,30 +196,24 @@ impl Sistema {
         }
     }
 
-    fn iteracao(&self) -> (Vec<f64>, Vec<f64>) {
-        let mut novas_temperaturas_meio1 = self.meio1.temperaturas.clone();
-        let mut novas_temperaturas_meio2 = self.meio2.temperaturas.clone();
+    fn iteracao(&self, buffer1: &mut Vec<f64>, buffer2: &mut Vec<f64>) {
+        //trocar os crone por memory swap
+        //não é tão simples assim
+        //a pira aqui seria passar dois vetores já criados e modificar eles ou então modificar
+        //direto as temperaturas dos meios que são passadas no self.
+
+        //std::mem::swap(&mut t_old, &mut t_new); //colouqei aqui só pra dar ctrl c rápidor
 
         let n = self.metodo.nos;
 
         let q1 = self.meio1.temperaturas.len();
 
-        // continua daqui
-        // preciso arrumar qual rho que pega e qual cp pega pra cada caso
-        // acho que interface flux vai precisar mudar também
-        // usando Sistema as coisas vão ter que passar por uma reformulação
-        //
-        //
-        // o que eu imagino que tem que acontecer aqui. o termo slonome vai etrar um rho e um cp de
-        // acordo com a função posicao que vai retornar o meio pra pegar o rho e o cp. a posicao
-        // local vai definir o rho e o cp e consequentemente a funcao slonome
-        // parece que o bagulho aqui vai ficar mais simples também.
+        let (mut q_esquerda, _) = interface_flux(self, 0);
 
-        //ele vai ter que ter um rho que depende da posiçao e consequentemente do meio
-        //e um cp tambǽm
         for j in 1..n - 1 {
             let (mei, pos) = self.indice(j);
-            let (q_esquerda, _) = interface_flux(self, j - 1);
+            //fazer um esquema de reaproveitar o fluxo da direita na esquerda do próximo pra não
+            //precisar recalcular
             let (q_direita, _) = interface_flux(self, j);
 
             let rho = mei.material.get_rho();
@@ -215,14 +223,15 @@ impl Sistema {
             let atualtemp = mei.temperaturas[pos];
 
             let novatemp = termo_sei_la_o_nome * (q_esquerda - q_direita) + atualtemp;
+
+            q_esquerda = q_direita;
+
             if j < q1 {
-                novas_temperaturas_meio1[pos] = novatemp
+                buffer1[pos] = novatemp
             } else {
-                novas_temperaturas_meio2[pos] = novatemp
+                buffer2[pos] = novatemp
             }
         }
-
-        (novas_temperaturas_meio1, novas_temperaturas_meio2)
         //TODO acho que a parada hoje é mudar a saída do código pra dois vetores separados.
     }
 
