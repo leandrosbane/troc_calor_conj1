@@ -28,6 +28,7 @@ fn main() {
     let ultimo = meio2.temperaturas.len() - 1;
     meio2.temperaturas[ultimo] = tb;
 
+    //metodo
     let metodinho = Metodo {
         dimensao: tamanho,
         nos: N,
@@ -35,6 +36,7 @@ fn main() {
         dt: dt,
     };
 
+    //declarando o sistema
     let mut sistema = Sistema {
         meio1,
         meio2,
@@ -42,13 +44,11 @@ fn main() {
         interface: N / 2 - 1,
     };
 
-    let root = BitMapBackend::gif("temperatura.gif", (800, 600), 50)
-        .unwrap()
-        .into_drawing_area();
-
+    //teste de fluxo
     let fluxo = interface_flux(&sistema, 0);
     println!("Fluxo entre os nós 0 e 1: {:?}", fluxo);
 
+    //teste que eu tenho que arrumar depois
     let mut novo_meio1 = sistema.meio1.temperaturas.clone();
     let mut novo_meio2 = sistema.meio2.temperaturas.clone();
 
@@ -57,72 +57,7 @@ fn main() {
     println!("{:?}", &novo_meio1[495..500]);
     println!("{:?}", &novo_meio2[495..500]);
 
-    let mut novas_temperaturas_meio1 = sistema.meio1.temperaturas.clone();
-    let mut novas_temperaturas_meio2 = sistema.meio2.temperaturas.clone();
-
-    for i in 0..1_000_000 {
-        sistema.iteracao(&mut novas_temperaturas_meio1, &mut novas_temperaturas_meio2);
-
-        std::mem::swap(
-            &mut sistema.meio1.temperaturas,
-            &mut novas_temperaturas_meio1,
-        );
-        std::mem::swap(
-            &mut sistema.meio2.temperaturas,
-            &mut novas_temperaturas_meio2,
-        );
-
-        //colocar um if nesse println pra não fazer 1 MELHAO de prints!!
-        if i % 100000 == 0 {
-            println!(
-                "iteração {:?}, começo: {:?} fim: {:?}",
-                i,
-                &sistema.meio1.temperaturas[0..5],
-                &sistema.meio2.temperaturas[495..500],
-            );
-            //print da interface
-            println!("Fe: {:?}", &sistema.meio1.temperaturas[495..500]);
-            println!("Cu: {:?}", &sistema.meio2.temperaturas[0..5]);
-        }
-
-        // parte de plotagem que só colei aqui sem entender bulhufas
-        if i % 100000 == 0 {
-            root.fill(&WHITE).unwrap();
-
-            let mut chart = ChartBuilder::on(&root)
-                .caption(format!("Iteração {}", i), ("sans-serif", 30))
-                .margin(20)
-                .x_label_area_size(40)
-                .y_label_area_size(40)
-                .build_cartesian_2d(0.0..sistema.metodo.dimensao, 0.0..350.0)
-                .unwrap();
-
-            chart
-                .configure_mesh()
-                .x_desc("Posição [m]")
-                .y_desc("Temperatura [°C]")
-                .draw()
-                .unwrap();
-
-            let temperaturas = sistema
-                .meio1
-                .temperaturas
-                .iter()
-                .chain(sistema.meio2.temperaturas.iter());
-
-            chart
-                .draw_series(LineSeries::new(
-                    temperaturas.enumerate().map(|(j, &temp)| {
-                        let x = j as f64 * sistema.metodo.dx;
-                        (x, temp)
-                    }),
-                    &RED,
-                ))
-                .unwrap();
-
-            root.present().unwrap();
-        }
-    }
+    sistema.calc_explicito(1_000_000);
 }
 
 struct Meio {
@@ -249,6 +184,74 @@ impl Sistema {
         let temp_atual = meio.temperaturas[indice_local];
 
         (-ge, capacidade + ge + gd, -gd, capacidade * temp_atual)
+    }
+
+    fn calc_explicito(&mut self, num_iteracoes: usize) {
+        let mut novas_temperaturas_meio1 = self.meio1.temperaturas.clone();
+        let mut novas_temperaturas_meio2 = self.meio2.temperaturas.clone();
+
+        //plot
+        let root = BitMapBackend::gif("temperatura.gif", (800, 600), 50)
+            .unwrap()
+            .into_drawing_area();
+
+        for i in 0..num_iteracoes {
+            self.iteracao(&mut novas_temperaturas_meio1, &mut novas_temperaturas_meio2);
+
+            std::mem::swap(&mut self.meio1.temperaturas, &mut novas_temperaturas_meio1);
+            std::mem::swap(&mut self.meio2.temperaturas, &mut novas_temperaturas_meio2);
+
+            //colocar um if nesse println pra não fazer 1 MELHAO de prints!!
+            if i % 100000 == 0 {
+                println!(
+                    "iteração {:?}, começo: {:?} fim: {:?}",
+                    i,
+                    &self.meio1.temperaturas[0..5],
+                    &self.meio2.temperaturas[495..500],
+                );
+                //print da interface
+                println!("Fe: {:?}", &self.meio1.temperaturas[495..500]);
+                println!("Cu: {:?}", &self.meio2.temperaturas[0..5]);
+            }
+
+            // parte de plotagem que só colei aqui sem entender bulhufas
+            if i % 100000 == 0 {
+                root.fill(&WHITE).unwrap();
+
+                let mut chart = ChartBuilder::on(&root)
+                    .caption(format!("Iteração {}", i), ("sans-serif", 30))
+                    .margin(20)
+                    .x_label_area_size(40)
+                    .y_label_area_size(40)
+                    .build_cartesian_2d(0.0..self.metodo.dimensao, 0.0..350.0)
+                    .unwrap();
+
+                chart
+                    .configure_mesh()
+                    .x_desc("Posição [m]")
+                    .y_desc("Temperatura [°C]")
+                    .draw()
+                    .unwrap();
+
+                let temperaturas = self
+                    .meio1
+                    .temperaturas
+                    .iter()
+                    .chain(self.meio2.temperaturas.iter());
+
+                chart
+                    .draw_series(LineSeries::new(
+                        temperaturas.enumerate().map(|(j, &temp)| {
+                            let x = j as f64 * self.metodo.dx;
+                            (x, temp)
+                        }),
+                        &RED,
+                    ))
+                    .unwrap();
+
+                root.present().unwrap();
+            }
+        }
     }
 }
 
