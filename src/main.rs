@@ -11,6 +11,7 @@ fn main() {
     //definindo a malha de pontos
     let tamanho: f64 = 1.0;
     const N: usize = 1000;
+    const ITERACOES_TEMPO: usize = 1_000_000;
     let n: f64 = N as f64;
     let dx = tamanho / n;
     let dt = 0.01;
@@ -45,19 +46,127 @@ fn main() {
     };
 
     //teste de fluxo
-    let fluxo = interface_flux(&sistema, 0);
-    println!("Fluxo entre os nós 0 e 1: {:?}", fluxo);
+    //let fluxo = interface_flux(&sistema, 0);
+    //println!("Fluxo entre os nós 0 e 1: {:?}", fluxo);
 
     //teste que eu tenho que arrumar depois
-    let mut novo_meio1 = sistema.meio1.temperaturas.clone();
-    let mut novo_meio2 = sistema.meio2.temperaturas.clone();
+    //let mut novo_meio1 = sistema.meio1.temperaturas.clone();
+    //let mut novo_meio2 = sistema.meio2.temperaturas.clone();
 
-    sistema.iteracao(&mut novo_meio1, &mut novo_meio2);
+    //sistema.iteracao(&mut novo_meio1, &mut novo_meio2);
 
-    println!("{:?}", &novo_meio1[495..500]);
-    println!("{:?}", &novo_meio2[495..500]);
+    //println!("{:?}", &novo_meio1[495..500]);
+    //println!("{:?}", &novo_meio2[495..500]);
 
-    sistema.calc_explicito(1_000_000);
+    //simulação implicita
+    //sistema.calc_explicito(ITERACOES_TEMPO);
+
+    //parte do implicito
+    //let coeficientes = sistema.coef_implicit(6);
+    //println!("Coeficientes do nó 6: {:?}", coeficientes);
+    //sistema.met_implicit();
+
+    // ============================================================
+    // 1. MONTA O SISTEMA LINEAR
+    // ============================================================
+
+    // let (inferior, principal, superior, b) = sistema.met_implicit();
+
+    // ============================================================
+    // 2. OLHA A MATRIZ ORIGINAL PERTO DO CONTORNO DE 350 °C
+    //    IMPORTANTE: isto acontece ANTES do solver.
+    // ============================================================
+
+    // println!("\n=== SISTEMA PERTO DE T = 350 ===");
+    //
+    // let n = principal.len();
+    //
+    // for i in n - 5..n {
+    //     println!(
+    //         "i={:4} | a={:15.6e}  p={:15.6e}  c={:15.6e}  b={:15.6e}",
+    //         i, inferior[i], principal[i], superior[i], b[i]
+    //     );
+    // }
+
+    // ============================================================
+    // 3. RESOLVE O SISTEMA UMA ÚNICA VEZ
+    // ============================================================
+
+    // let (_, _, _, temperaturas_internas) =
+    //     sistema.solver_implicit(inferior, principal, superior, b);
+    //
+    // // ============================================================
+    // // 4. OLHA A SOLUÇÃO PERTO DO CONTORNO DE 350 °C
+    // // ============================================================
+    //
+    // println!("\n=== TEMPERATURAS PERTO DE T = 350 ===");
+    //
+    // let n = temperaturas_internas.len();
+    //
+    // for i in n - 10..n {
+    //     println!("i={:4} | T={:20.15}", i, temperaturas_internas[i]);
+    // }
+
+    // println!("contorno | T={:20.15}", tb);
+
+    //loop completo
+    for _ in 0..ITERACOES_TEMPO {
+        let (inferior, principal, superior, b) = sistema.met_implicit();
+
+        let (_, _, _, temperaturas_internas) =
+            sistema.solver_implicit(inferior, principal, superior, b);
+
+        // atualizar meio1 e meio2 com temperaturas_internas
+        sistema.meio1.temperaturas[1..].copy_from_slice(&temperaturas_internas[..499]);
+
+        sistema.meio2.temperaturas[..499].copy_from_slice(&temperaturas_internas[499..]);
+    }
+
+    // ============================================================
+    // 5. MONTA O VETOR COMPLETO PARA O GRÁFICO
+    // ============================================================
+
+    let mut temperaturas = Vec::with_capacity(N);
+
+    temperaturas.extend_from_slice(&sistema.meio1.temperaturas);
+    temperaturas.extend_from_slice(&sistema.meio2.temperaturas);
+
+    // ============================================================
+    // 6. PLOT
+    // ============================================================
+
+    {
+        let root = BitMapBackend::new("implicito.png", (800, 600)).into_drawing_area();
+
+        root.fill(&WHITE).unwrap();
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption("Método implícito", ("sans-serif", 30))
+            .margin(20)
+            .x_label_area_size(40)
+            .y_label_area_size(40)
+            .build_cartesian_2d(0.0..tamanho, 0.0..350.0)
+            .unwrap();
+
+        chart
+            .configure_mesh()
+            .x_desc("Posição [m]")
+            .y_desc("Temperatura [°C]")
+            .draw()
+            .unwrap();
+
+        chart
+            .draw_series(LineSeries::new(
+                temperaturas.iter().enumerate().map(|(i, &temp)| {
+                    let x = i as f64 * dx;
+                    (x, temp)
+                }),
+                &RED,
+            ))
+            .unwrap();
+
+        root.present().unwrap();
+    }
 }
 
 struct Meio {
@@ -183,6 +292,7 @@ impl Sistema {
 
         let temp_atual = meio.temperaturas[indice_local];
 
+        //aW, aP, aE, b
         (-ge, capacidade + ge + gd, -gd, capacidade * temp_atual)
     }
 
@@ -252,6 +362,77 @@ impl Sistema {
                 root.present().unwrap();
             }
         }
+    }
+
+    //função funcionando
+    fn met_implicit(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let tamanho = self
+            .metodo
+            .nos
+            .checked_sub(2)
+            .expect("o tamanho da malha deve ser maior que 2!!!!");
+
+        let mut diagonal_inferior = vec![0.0; tamanho];
+        let mut diagonal_principal = vec![0.0; tamanho];
+        let mut diagonal_superior = vec![0.0; tamanho];
+        let mut b = vec![0.0; tamanho];
+
+        for i in 0..tamanho {
+            (
+                diagonal_inferior[i],
+                diagonal_principal[i],
+                diagonal_superior[i],
+                b[i],
+            ) = self.coef_implicit(i + 1);
+        }
+
+        let ultima_linha = tamanho - 1;
+        let ponta_direita = self.meio2.temperaturas.len() - 1;
+        //tratamento primeira linha
+        b[0] = b[0] - diagonal_inferior[0] * self.meio1.temperaturas[0];
+        diagonal_inferior[0] = 0.0;
+        //tratamento ultima linha
+        b[ultima_linha] = b[ultima_linha]
+            - diagonal_superior[ultima_linha] * self.meio2.temperaturas[ponta_direita];
+        diagonal_superior[ultima_linha] = 0.0;
+
+        (diagonal_inferior, diagonal_principal, diagonal_superior, b)
+    }
+
+    //thompsoooooooooonnnnnnnnnnnnnnn
+    fn solver_implicit(
+        &self,
+        mut diagonal_inferior: Vec<f64>,
+        mut diagonal_principal: Vec<f64>,
+        mut diagonal_superior: Vec<f64>,
+        mut b: Vec<f64>,
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        for i in 0..diagonal_principal.len() - 1 {
+            let c1 = diagonal_inferior[i + 1] / diagonal_principal[i];
+            diagonal_inferior[i] = 0.0;
+            diagonal_principal[i] *= -c1;
+            diagonal_superior[i] *= -c1;
+            b[i] *= -c1;
+
+            diagonal_inferior[i + 1] += diagonal_principal[i];
+            diagonal_principal[i + 1] += diagonal_superior[i];
+            //diagonal_superior[i + 1] = diagonal_superior[i +1];
+            b[i + 1] += b[i];
+        }
+        let ultimo_termo = b.len() - 1;
+        b[ultimo_termo] = b[ultimo_termo] / diagonal_principal[ultimo_termo];
+        diagonal_principal[ultimo_termo] = 1.0;
+        for n in (1..diagonal_principal.len()).rev() {
+            //agora o negócio é pegar o bn e dividir por pn
+            //salva o tn
+            //faz bn-1 = bn-1 - sn-1 * tn
+            //divide bn por pn-1 e salva no tn-1
+            b[n - 1] = (b[n - 1] - diagonal_superior[n - 1] * b[n]) / diagonal_principal[n - 1];
+            diagonal_principal[n - 1] = 1.0;
+
+            //repete até o indice zero
+        }
+        (diagonal_inferior, diagonal_principal, diagonal_superior, b)
     }
 }
 
