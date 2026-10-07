@@ -59,114 +59,43 @@ fn main() {
     //println!("{:?}", &novo_meio2[495..500]);
 
     //simulação implicita
-    //sistema.calc_explicito(ITERACOES_TEMPO);
+    sistema.calc_explicito(ITERACOES_TEMPO);
+
+    sistema.plotar("explicito.png", "Método explícito");
 
     //parte do implicito
     //let coeficientes = sistema.coef_implicit(6);
     //println!("Coeficientes do nó 6: {:?}", coeficientes);
     //sistema.met_implicit();
 
-    // ============================================================
-    // 1. MONTA O SISTEMA LINEAR
-    // ============================================================
-
-    // let (inferior, principal, superior, b) = sistema.met_implicit();
-
-    // ============================================================
-    // 2. OLHA A MATRIZ ORIGINAL PERTO DO CONTORNO DE 350 °C
-    //    IMPORTANTE: isto acontece ANTES do solver.
-    // ============================================================
-
-    // println!("\n=== SISTEMA PERTO DE T = 350 ===");
-    //
-    // let n = principal.len();
-    //
-    // for i in n - 5..n {
-    //     println!(
-    //         "i={:4} | a={:15.6e}  p={:15.6e}  c={:15.6e}  b={:15.6e}",
-    //         i, inferior[i], principal[i], superior[i], b[i]
-    //     );
-    // }
-
-    // ============================================================
-    // 3. RESOLVE O SISTEMA UMA ÚNICA VEZ
-    // ============================================================
-
-    // let (_, _, _, temperaturas_internas) =
-    //     sistema.solver_implicit(inferior, principal, superior, b);
-    //
-    // // ============================================================
-    // // 4. OLHA A SOLUÇÃO PERTO DO CONTORNO DE 350 °C
-    // // ============================================================
-    //
-    // println!("\n=== TEMPERATURAS PERTO DE T = 350 ===");
-    //
-    // let n = temperaturas_internas.len();
-    //
-    // for i in n - 10..n {
-    //     println!("i={:4} | T={:20.15}", i, temperaturas_internas[i]);
-    // }
-
-    // println!("contorno | T={:20.15}", tb);
-
     //loop completo
-    for _ in 0..ITERACOES_TEMPO {
-        let (inferior, principal, superior, b) = sistema.met_implicit();
+    let mut tridiag = SistemaTridiagonal::criar(N - 2);
 
-        let (_, _, _, temperaturas_internas) =
-            sistema.solver_implicit(inferior, principal, superior, b);
+    println!("len b = {}", tridiag.b.len());
+    println!("destino meio1 = {}", sistema.meio1.temperaturas[1..].len());
+
+    println!("{:?}", &tridiag.diagonal_principal[..5]);
+    println!("{:?}", &tridiag.b[..5]);
+
+    for _ in 0..ITERACOES_TEMPO {
+        sistema.met_implicit(&mut tridiag);
+
+        sistema.solver_implicit(&mut tridiag);
 
         // atualizar meio1 e meio2 com temperaturas_internas
-        sistema.meio1.temperaturas[1..].copy_from_slice(&temperaturas_internas[..499]);
+        sistema.meio1.temperaturas[1..].copy_from_slice(&tridiag.b[..499]);
 
-        sistema.meio2.temperaturas[..499].copy_from_slice(&temperaturas_internas[499..]);
+        sistema.meio2.temperaturas[..499].copy_from_slice(&tridiag.b[499..]);
     }
 
-    // ============================================================
-    // 5. MONTA O VETOR COMPLETO PARA O GRÁFICO
-    // ============================================================
-
+    //vetor completo
     let mut temperaturas = Vec::with_capacity(N);
 
     temperaturas.extend_from_slice(&sistema.meio1.temperaturas);
     temperaturas.extend_from_slice(&sistema.meio2.temperaturas);
 
-    // ============================================================
-    // 6. PLOT
-    // ============================================================
-
-    {
-        let root = BitMapBackend::new("implicito.png", (800, 600)).into_drawing_area();
-
-        root.fill(&WHITE).unwrap();
-
-        let mut chart = ChartBuilder::on(&root)
-            .caption("Método implícito", ("sans-serif", 30))
-            .margin(20)
-            .x_label_area_size(40)
-            .y_label_area_size(40)
-            .build_cartesian_2d(0.0..tamanho, 0.0..350.0)
-            .unwrap();
-
-        chart
-            .configure_mesh()
-            .x_desc("Posição [m]")
-            .y_desc("Temperatura [°C]")
-            .draw()
-            .unwrap();
-
-        chart
-            .draw_series(LineSeries::new(
-                temperaturas.iter().enumerate().map(|(i, &temp)| {
-                    let x = i as f64 * dx;
-                    (x, temp)
-                }),
-                &RED,
-            ))
-            .unwrap();
-
-        root.present().unwrap();
-    }
+    //plot
+    sistema.plotar("implicito.png", "Método implícito");
 }
 
 struct Meio {
@@ -186,6 +115,24 @@ struct Sistema {
     meio2: Meio,
     metodo: Metodo,
     interface: usize,
+}
+
+struct SistemaTridiagonal {
+    diagonal_inferior: Vec<f64>,
+    diagonal_principal: Vec<f64>,
+    diagonal_superior: Vec<f64>,
+    b: Vec<f64>,
+}
+
+impl SistemaTridiagonal {
+    fn criar(tamanho: usize) -> Self {
+        Self {
+            diagonal_inferior: vec![0.0; tamanho],
+            diagonal_principal: vec![0.0; tamanho],
+            diagonal_superior: vec![0.0; tamanho],
+            b: vec![0.0; tamanho],
+        }
+    }
 }
 
 enum Material {
@@ -300,11 +247,6 @@ impl Sistema {
         let mut novas_temperaturas_meio1 = self.meio1.temperaturas.clone();
         let mut novas_temperaturas_meio2 = self.meio2.temperaturas.clone();
 
-        //plot
-        let root = BitMapBackend::gif("temperatura.gif", (800, 600), 50)
-            .unwrap()
-            .into_drawing_area();
-
         for i in 0..num_iteracoes {
             self.iteracao(&mut novas_temperaturas_meio1, &mut novas_temperaturas_meio2);
 
@@ -312,7 +254,8 @@ impl Sistema {
             std::mem::swap(&mut self.meio2.temperaturas, &mut novas_temperaturas_meio2);
 
             //colocar um if nesse println pra não fazer 1 MELHAO de prints!!
-            if i % 100000 == 0 {
+            let passo = i + 1;
+            if passo % 100000 == 0 {
                 println!(
                     "iteração {:?}, começo: {:?} fim: {:?}",
                     i,
@@ -323,116 +266,105 @@ impl Sistema {
                 println!("Fe: {:?}", &self.meio1.temperaturas[495..500]);
                 println!("Cu: {:?}", &self.meio2.temperaturas[0..5]);
             }
-
-            // parte de plotagem que só colei aqui sem entender bulhufas
-            if i % 100000 == 0 {
-                root.fill(&WHITE).unwrap();
-
-                let mut chart = ChartBuilder::on(&root)
-                    .caption(format!("Iteração {}", i), ("sans-serif", 30))
-                    .margin(20)
-                    .x_label_area_size(40)
-                    .y_label_area_size(40)
-                    .build_cartesian_2d(0.0..self.metodo.dimensao, 0.0..350.0)
-                    .unwrap();
-
-                chart
-                    .configure_mesh()
-                    .x_desc("Posição [m]")
-                    .y_desc("Temperatura [°C]")
-                    .draw()
-                    .unwrap();
-
-                let temperaturas = self
-                    .meio1
-                    .temperaturas
-                    .iter()
-                    .chain(self.meio2.temperaturas.iter());
-
-                chart
-                    .draw_series(LineSeries::new(
-                        temperaturas.enumerate().map(|(j, &temp)| {
-                            let x = j as f64 * self.metodo.dx;
-                            (x, temp)
-                        }),
-                        &RED,
-                    ))
-                    .unwrap();
-
-                root.present().unwrap();
-            }
         }
     }
 
     //função funcionando
-    fn met_implicit(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    fn met_implicit(&self, sistema: &mut SistemaTridiagonal) {
         let tamanho = self
             .metodo
             .nos
             .checked_sub(2)
             .expect("o tamanho da malha deve ser maior que 2!!!!");
 
-        let mut diagonal_inferior = vec![0.0; tamanho];
-        let mut diagonal_principal = vec![0.0; tamanho];
-        let mut diagonal_superior = vec![0.0; tamanho];
-        let mut b = vec![0.0; tamanho];
-
         for i in 0..tamanho {
             (
-                diagonal_inferior[i],
-                diagonal_principal[i],
-                diagonal_superior[i],
-                b[i],
+                sistema.diagonal_inferior[i],
+                sistema.diagonal_principal[i],
+                sistema.diagonal_superior[i],
+                sistema.b[i],
             ) = self.coef_implicit(i + 1);
         }
 
         let ultima_linha = tamanho - 1;
         let ponta_direita = self.meio2.temperaturas.len() - 1;
         //tratamento primeira linha
-        b[0] = b[0] - diagonal_inferior[0] * self.meio1.temperaturas[0];
-        diagonal_inferior[0] = 0.0;
+        sistema.b[0] = sistema.b[0] - sistema.diagonal_inferior[0] * self.meio1.temperaturas[0];
+        sistema.diagonal_inferior[0] = 0.0;
         //tratamento ultima linha
-        b[ultima_linha] = b[ultima_linha]
-            - diagonal_superior[ultima_linha] * self.meio2.temperaturas[ponta_direita];
-        diagonal_superior[ultima_linha] = 0.0;
-
-        (diagonal_inferior, diagonal_principal, diagonal_superior, b)
+        sistema.b[ultima_linha] = sistema.b[ultima_linha]
+            - sistema.diagonal_superior[ultima_linha] * self.meio2.temperaturas[ponta_direita];
+        sistema.diagonal_superior[ultima_linha] = 0.0;
     }
 
     //thompsoooooooooonnnnnnnnnnnnnnn
-    fn solver_implicit(
-        &self,
-        mut diagonal_inferior: Vec<f64>,
-        mut diagonal_principal: Vec<f64>,
-        mut diagonal_superior: Vec<f64>,
-        mut b: Vec<f64>,
-    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-        for i in 0..diagonal_principal.len() - 1 {
-            let c1 = diagonal_inferior[i + 1] / diagonal_principal[i];
-            diagonal_inferior[i] = 0.0;
-            diagonal_principal[i] *= -c1;
-            diagonal_superior[i] *= -c1;
-            b[i] *= -c1;
+    fn solver_implicit(&self, sistema: &mut SistemaTridiagonal) {
+        for i in 0..sistema.diagonal_principal.len() - 1 {
+            let c1 = sistema.diagonal_inferior[i + 1] / sistema.diagonal_principal[i];
+            sistema.diagonal_inferior[i] = 0.0;
+            sistema.diagonal_principal[i] *= -c1;
+            sistema.diagonal_superior[i] *= -c1;
+            sistema.b[i] *= -c1;
 
-            diagonal_inferior[i + 1] += diagonal_principal[i];
-            diagonal_principal[i + 1] += diagonal_superior[i];
+            sistema.diagonal_inferior[i + 1] += sistema.diagonal_principal[i];
+            sistema.diagonal_principal[i + 1] += sistema.diagonal_superior[i];
             //diagonal_superior[i + 1] = diagonal_superior[i +1];
-            b[i + 1] += b[i];
+            sistema.b[i + 1] += sistema.b[i];
         }
-        let ultimo_termo = b.len() - 1;
-        b[ultimo_termo] = b[ultimo_termo] / diagonal_principal[ultimo_termo];
-        diagonal_principal[ultimo_termo] = 1.0;
-        for n in (1..diagonal_principal.len()).rev() {
+        let ultimo_termo = sistema.b.len() - 1;
+        sistema.b[ultimo_termo] =
+            sistema.b[ultimo_termo] / sistema.diagonal_principal[ultimo_termo];
+        sistema.diagonal_principal[ultimo_termo] = 1.0;
+        for n in (1..sistema.diagonal_principal.len()).rev() {
             //agora o negócio é pegar o bn e dividir por pn
             //salva o tn
             //faz bn-1 = bn-1 - sn-1 * tn
             //divide bn por pn-1 e salva no tn-1
-            b[n - 1] = (b[n - 1] - diagonal_superior[n - 1] * b[n]) / diagonal_principal[n - 1];
-            diagonal_principal[n - 1] = 1.0;
+            sistema.b[n - 1] = (sistema.b[n - 1] - sistema.diagonal_superior[n - 1] * sistema.b[n])
+                / sistema.diagonal_principal[n - 1];
+            sistema.diagonal_principal[n - 1] = 1.0;
 
             //repete até o indice zero
         }
-        (diagonal_inferior, diagonal_principal, diagonal_superior, b)
+    }
+
+    fn plotar(&self, arquivo: &str, titulo: &str) {
+        let root = BitMapBackend::new(arquivo, (800, 600)).into_drawing_area();
+
+        root.fill(&WHITE).unwrap();
+
+        let mut chart = ChartBuilder::on(&root)
+            .caption(titulo, ("sans-serif", 30))
+            .margin(20)
+            .x_label_area_size(40)
+            .y_label_area_size(40)
+            .build_cartesian_2d(0.0..self.metodo.dimensao, 0.0..350.0)
+            .unwrap();
+
+        chart
+            .configure_mesh()
+            .x_desc("Posição [m]")
+            .y_desc("Temperatura [°C]")
+            .draw()
+            .unwrap();
+
+        let temperaturas = self
+            .meio1
+            .temperaturas
+            .iter()
+            .chain(self.meio2.temperaturas.iter());
+
+        chart
+            .draw_series(LineSeries::new(
+                temperaturas.enumerate().map(|(i, &temp)| {
+                    let x = i as f64 * self.metodo.dx;
+                    (x, temp)
+                }),
+                &RED,
+            ))
+            .unwrap();
+
+        root.present().unwrap();
     }
 }
 
