@@ -11,7 +11,7 @@ fn main() {
     //definindo a malha de pontos
     let tamanho: f64 = 1.0;
     const N: usize = 1000;
-    const ITERACOES_TEMPO: usize = 1_000_000;
+    const ITERACOES_TEMPO: usize = 5_000_000;
     let n: f64 = N as f64;
     let dx = tamanho / n;
     let dt = 0.01;
@@ -38,7 +38,14 @@ fn main() {
     };
 
     //declarando o sistema
-    let mut sistema = Sistema {
+    let mut sistema_impl = Sistema {
+        meio1: meio1.clone(),
+        meio2: meio2.clone(),
+        metodo: metodinho.clone(),
+        interface: N / 2 - 1,
+    };
+
+    let mut sistema_expl = Sistema {
         meio1,
         meio2,
         metodo: metodinho,
@@ -59,9 +66,9 @@ fn main() {
     //println!("{:?}", &novo_meio2[495..500]);
 
     //simulação implicita
-    sistema.calc_explicito(ITERACOES_TEMPO);
+    sistema_expl.calc_explicito(ITERACOES_TEMPO);
 
-    sistema.plotar("explicito.png", "Método explícito");
+    sistema_expl.plotar("explicito.png", "Método explícito");
 
     //parte do implicito
     //let coeficientes = sistema.coef_implicit(6);
@@ -72,37 +79,36 @@ fn main() {
     let mut tridiag = SistemaTridiagonal::criar(N - 2);
 
     println!("len b = {}", tridiag.b.len());
-    println!("destino meio1 = {}", sistema.meio1.temperaturas[1..].len());
+    println!(
+        "destino meio1 = {}",
+        sistema_impl.meio1.temperaturas[1..].len()
+    );
 
     println!("{:?}", &tridiag.diagonal_principal[..5]);
     println!("{:?}", &tridiag.b[..5]);
 
-    for _ in 0..ITERACOES_TEMPO {
-        sistema.met_implicit(&mut tridiag);
-
-        sistema.solver_implicit(&mut tridiag);
-
-        // atualizar meio1 e meio2 com temperaturas_internas
-        sistema.meio1.temperaturas[1..].copy_from_slice(&tridiag.b[..499]);
-
-        sistema.meio2.temperaturas[..499].copy_from_slice(&tridiag.b[499..]);
-    }
+    sistema_impl.solver_implicit(&mut tridiag, ITERACOES_TEMPO);
 
     //vetor completo
     let mut temperaturas = Vec::with_capacity(N);
 
-    temperaturas.extend_from_slice(&sistema.meio1.temperaturas);
-    temperaturas.extend_from_slice(&sistema.meio2.temperaturas);
+    temperaturas.extend_from_slice(&sistema_impl.meio1.temperaturas);
+    temperaturas.extend_from_slice(&sistema_impl.meio2.temperaturas);
+
+    comparacao(&sistema_impl, &sistema_expl);
+    maior_diferenca(&sistema_impl, &sistema_expl);
 
     //plot
-    sistema.plotar("implicito.png", "Método implícito");
+    sistema_expl.plotar("implicito.png", "Método implícito");
 }
 
+#[derive(Clone)]
 struct Meio {
     temperaturas: Vec<f64>,
     material: Material,
 }
 
+#[derive(Clone)]
 struct Metodo {
     dimensao: f64,
     nos: usize,
@@ -110,6 +116,7 @@ struct Metodo {
     dt: f64,
 }
 
+#[derive(Clone)]
 struct Sistema {
     meio1: Meio,
     meio2: Meio,
@@ -135,6 +142,7 @@ impl SistemaTridiagonal {
     }
 }
 
+#[derive(Clone)]
 enum Material {
     Ferro,
     Cobre,
@@ -269,7 +277,7 @@ impl Sistema {
         }
     }
 
-    //função funcionando
+    //função que monta a matriz ou o sistema de equações pra ser resolvido
     fn met_implicit(&self, sistema: &mut SistemaTridiagonal) {
         let tamanho = self
             .metodo
@@ -298,33 +306,43 @@ impl Sistema {
     }
 
     //thompsoooooooooonnnnnnnnnnnnnnn
-    fn solver_implicit(&self, sistema: &mut SistemaTridiagonal) {
-        for i in 0..sistema.diagonal_principal.len() - 1 {
-            let c1 = sistema.diagonal_inferior[i + 1] / sistema.diagonal_principal[i];
-            sistema.diagonal_inferior[i] = 0.0;
-            sistema.diagonal_principal[i] *= -c1;
-            sistema.diagonal_superior[i] *= -c1;
-            sistema.b[i] *= -c1;
+    fn solver_implicit(&mut self, mut sistema: &mut SistemaTridiagonal, num_iteracoes: usize) {
+        let n1 = self.meio1.temperaturas.len();
+        let n2 = self.meio2.temperaturas.len();
 
-            sistema.diagonal_inferior[i + 1] += sistema.diagonal_principal[i];
-            sistema.diagonal_principal[i + 1] += sistema.diagonal_superior[i];
-            //diagonal_superior[i + 1] = diagonal_superior[i +1];
-            sistema.b[i + 1] += sistema.b[i];
-        }
-        let ultimo_termo = sistema.b.len() - 1;
-        sistema.b[ultimo_termo] =
-            sistema.b[ultimo_termo] / sistema.diagonal_principal[ultimo_termo];
-        sistema.diagonal_principal[ultimo_termo] = 1.0;
-        for n in (1..sistema.diagonal_principal.len()).rev() {
-            //agora o negócio é pegar o bn e dividir por pn
-            //salva o tn
-            //faz bn-1 = bn-1 - sn-1 * tn
-            //divide bn por pn-1 e salva no tn-1
-            sistema.b[n - 1] = (sistema.b[n - 1] - sistema.diagonal_superior[n - 1] * sistema.b[n])
-                / sistema.diagonal_principal[n - 1];
-            sistema.diagonal_principal[n - 1] = 1.0;
+        for _ in 0..num_iteracoes {
+            self.met_implicit(&mut sistema);
+            for i in 0..sistema.diagonal_principal.len() - 1 {
+                let c1 = sistema.diagonal_inferior[i + 1] / sistema.diagonal_principal[i];
+                sistema.diagonal_inferior[i] = 0.0;
+                sistema.diagonal_principal[i] *= -c1;
+                sistema.diagonal_superior[i] *= -c1;
+                sistema.b[i] *= -c1;
 
-            //repete até o indice zero
+                sistema.diagonal_inferior[i + 1] += sistema.diagonal_principal[i];
+                sistema.diagonal_principal[i + 1] += sistema.diagonal_superior[i];
+                //diagonal_superior[i + 1] = diagonal_superior[i +1];
+                sistema.b[i + 1] += sistema.b[i];
+            }
+            let ultimo_termo = sistema.b.len() - 1;
+            sistema.b[ultimo_termo] =
+                sistema.b[ultimo_termo] / sistema.diagonal_principal[ultimo_termo];
+            sistema.diagonal_principal[ultimo_termo] = 1.0;
+            for n in (1..sistema.diagonal_principal.len()).rev() {
+                //agora o negócio é pegar o bn e dividir por pn
+                //salva o tn
+                //faz bn-1 = bn-1 - sn-1 * tn
+                //divide bn por pn-1 e salva no tn-1
+                sistema.b[n - 1] = (sistema.b[n - 1]
+                    - sistema.diagonal_superior[n - 1] * sistema.b[n])
+                    / sistema.diagonal_principal[n - 1];
+                sistema.diagonal_principal[n - 1] = 1.0;
+
+                //repete até o indice zero
+            }
+            //atualiza os dados das temperaturas com os b obtidos
+            self.meio1.temperaturas[1..].copy_from_slice(&sistema.b[..n1 - 1]);
+            self.meio2.temperaturas[..n2 - 1].copy_from_slice(&sistema.b[n1 - 1..]);
         }
     }
 
@@ -397,4 +415,54 @@ fn interface_flux(sistema: &Sistema, posicao: usize) -> (f64, f64) {
     let g = 1.0 / r; //condutancia termica
     let q = g * (t1 - t2); // fluxo 
     (q, g)
+}
+
+//TODO: aqui vai a função que junta os dois métodos e compara eles lado a lado de acordo com o
+//número de iterações no tempo
+//
+//entrada: sistema implicito e sistema explicito. também o número de tempo
+fn comparacao(sisimpl: &Sistema, sisexpl: &Sistema) {
+    //
+    //tirar as diferenças
+
+    //printar os dados relevantes.
+    for i in 0..sisimpl.meio1.temperaturas.len() {
+        if i % 100 == 0 {
+            println!(
+                "oia a dif: {:?} na posiçao  {:?}",
+                sisexpl.meio1.temperaturas[i] - sisimpl.meio1.temperaturas[i],
+                i
+            )
+        }
+    }
+    for i in 0..sisimpl.meio2.temperaturas.len() {
+        if i % 100 == 0 {
+            println!(
+                "oia a dif: {:?} na posiçao  {:?}",
+                sisexpl.meio2.temperaturas[i] - sisimpl.meio2.temperaturas[i],
+                i + sisexpl.meio1.temperaturas.len()
+            )
+        }
+    }
+}
+
+fn maior_diferenca(sisimpl: &Sistema, sisexpl: &Sistema) {
+    let mut maior: f64 = 0.0;
+    let mut posicao: usize = 0;
+    for i in 0..sisimpl.meio1.temperaturas.len() {
+        let dif = (sisexpl.meio1.temperaturas[i] - sisimpl.meio1.temperaturas[i]).abs();
+        if dif > maior {
+            maior = dif;
+            posicao = i;
+        }
+    }
+    println!("maior dif no meio1: {:?} posição: {:?}", maior, posicao);
+    for i in 0..sisimpl.meio2.temperaturas.len() {
+        let dif = (sisexpl.meio2.temperaturas[i] - sisimpl.meio2.temperaturas[i]).abs();
+        if dif > maior {
+            maior = dif;
+            posicao = i + sisexpl.meio1.temperaturas.len();
+        }
+    }
+    println!("maior dif global: {:?} posição: {:?}", maior, posicao);
 }
