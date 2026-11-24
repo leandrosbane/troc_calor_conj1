@@ -1,28 +1,57 @@
 use plotters::prelude::*;
 
+mod tabela_ar;
+use std::sync::Arc;
+use std::time::Instant;
+use tabela_ar::TabelaAr;
+
 fn main() {
     println!("Hello, world!");
 
-    // definindo variáveis
-    // passar tudo issopra enum
-    //let ferrinho = "material_a";
-    //let cobrezinho = "material_b";
+    //tabela de prop fisicas do ar:::
+    let tabela_ar = TabelaAr::nova(101_325.0).expect("Erro ao criar tabela de propriedades do ar");
+
+    // Exemplo: ar a 350 °C
+    let props = tabela_ar.consultar(350.0);
+
+    println!("Densidade: {}", props.rho);
+    println!("Calor específico: {}", props.cp);
+    println!("Condutividade: {}", props.k);
+    println!("Viscosidade: {}", props.mu);
 
     //definindo a malha de pontos
     let tamanho: f64 = 1.0;
     const N: usize = 1000;
-    const ITERACOES_TEMPO: usize = 5_000_000;
+    const ITERACOES_TEMPO: usize = 1_000_000;
     let n: f64 = N as f64;
     let dx = tamanho / n;
-    let dt = 0.01;
+    let dt = 0.003;
+    let tabela_ar =
+        Arc::new(TabelaAr::nova(101_325.0).expect("Erro ao inicializar propriedades do ar"));
 
     //condições de contorno
     let ta = 0.0;
     let tb = 350.;
 
     //meios
-    let mut meio1 = Meio::criar_material(N / 2, 0.0, Material::Ferro);
-    let mut meio2 = Meio::criar_material(N / 2, 0.0, Material::Cobre);
+    //TODO: que tal criar malhas com valores variados de temperatura pra estressar os métodos??
+    //cria os materiais
+    let mut meio1 = Meio::criar_material(N / 2, 350.0, Material::Ferro);
+    let mut meio2 = Meio::criar_material(N / 2, 350.0, Material::Ar(Arc::clone(&tabela_ar)));
+
+    //define o valor da velocidade em cada nó
+    let pulando_solido = meio1.temperaturas.len() as f64 * dx;
+    Meio::criar_vetor_advectivo(
+        &mut meio1.velocidade_advectiva,
+        |x: f64| meio1.material.get_u(pulando_solido + x),
+        dx,
+    );
+    Meio::criar_vetor_advectivo(
+        &mut meio2.velocidade_advectiva,
+        |x: f64| meio2.material.get_u(pulando_solido + x),
+        dx,
+    );
+    //let mut meio2 = Meio::criar_material(N / 2, 350.0, Material::Cobre);
 
     meio1.temperaturas[0] = ta;
     //meio2.temperaturas[N / 2 - 1] = tb;
@@ -39,17 +68,17 @@ fn main() {
 
     //declarando o sistema
     let mut sistema_impl = Sistema {
+        interface: meio1.temperaturas.len(),
         meio1: meio1.clone(),
         meio2: meio2.clone(),
         metodo: metodinho.clone(),
-        interface: N / 2 - 1,
     };
 
     let mut sistema_expl = Sistema {
+        interface: meio1.temperaturas.len(),
         meio1,
         meio2,
         metodo: metodinho,
-        interface: N / 2 - 1,
     };
 
     //teste de fluxo
@@ -66,45 +95,107 @@ fn main() {
     //println!("{:?}", &novo_meio2[495..500]);
 
     //simulação implicita
-    sistema_expl.calc_explicito(ITERACOES_TEMPO);
+    //sistema_expl.calc_explicito(ITERACOES_TEMPO);
+    println!("metodo explicito:");
+    benchmark(ITERACOES_TEMPO, || {
+        sistema_expl.calc_explicito(ITERACOES_TEMPO);
+    });
+
+    let tmax = sistema_expl
+        .meio1
+        .temperaturas
+        .iter()
+        .chain(sistema_expl.meio2.temperaturas.iter())
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    println!("Temperatura máxima: {tmax:.3} °C");
 
     sistema_expl.plotar("explicito.png", "Método explícito");
 
     //parte do implicito
-    //let coeficientes = sistema.coef_implicit(6);
-    //println!("Coeficientes do nó 6: {:?}", coeficientes);
-    //sistema.met_implicit();
+    let mut tridiag =
+        SistemaTridiagonal::criar(N.checked_sub(2).expect("N tem que ser maior que 2!!"));
+    let coeficientes = sistema_impl.coef_implicit_adv(6);
+    println!("Coeficientes do nó 6: {:?}", coeficientes);
+    //sistema_impl.met_implicit(&mut tridiag);
+    let mut sis_impl2 = sistema_impl.clone();
+    let mut sis_impl3 = sistema_impl.clone();
 
+    println!("metodo implicito twisted:");
+    benchmark(ITERACOES_TEMPO, || {
+        sistema_impl.solver_implicit_claude(&mut tridiag, ITERACOES_TEMPO);
+    });
+
+    println!("metodo implicito homemade:");
+    benchmark(ITERACOES_TEMPO, || {
+        sis_impl2.solver_implicit(&mut tridiag, ITERACOES_TEMPO);
+    });
+
+    println!("metodo implicito classico:");
+    benchmark(ITERACOES_TEMPO, || {
+        sis_impl3.solver_implicit_classico(&mut tridiag, ITERACOES_TEMPO);
+    });
     //loop completo
-    let mut tridiag = SistemaTridiagonal::criar(N - 2);
-
-    println!("len b = {}", tridiag.b.len());
-    println!(
-        "destino meio1 = {}",
-        sistema_impl.meio1.temperaturas[1..].len()
-    );
-
-    println!("{:?}", &tridiag.diagonal_principal[..5]);
-    println!("{:?}", &tridiag.b[..5]);
-
-    sistema_impl.solver_implicit(&mut tridiag, ITERACOES_TEMPO);
-
-    //vetor completo
-    let mut temperaturas = Vec::with_capacity(N);
-
-    temperaturas.extend_from_slice(&sistema_impl.meio1.temperaturas);
-    temperaturas.extend_from_slice(&sistema_impl.meio2.temperaturas);
-
+    // let mut tridiag =
+    //     SistemaTridiagonal::criar(N.checked_sub(2).expect("N tem que ser maior que 2!!"));
+    //
+    // println!("len b = {}", tridiag.b.len());
+    // println!(
+    //     "destino meio1 = {}",
+    //     sistema_impl.meio1.temperaturas[1..].len()
+    // );
+    //
+    // println!("{:?}", &tridiag.diagonal_principal[..5]);
+    // println!("{:?}", &tridiag.b[..5]);
+    //
+    // sistema_impl.solver_implicit(&mut tridiag, ITERACOES_TEMPO);
+    //
+    // //vetor completo
+    // let mut temperaturas = Vec::with_capacity(N);
+    //
+    // temperaturas.extend_from_slice(&sistema_impl.meio1.temperaturas);
+    // temperaturas.extend_from_slice(&sistema_impl.meio2.temperaturas);
+    //
     comparacao(&sistema_impl, &sistema_expl);
     maior_diferenca(&sistema_impl, &sistema_expl);
+    //
+
+    println!("diferença entre os mesmos métodos:");
+    comparacao(&sistema_impl, &sis_impl2);
+    maior_diferenca(&sistema_impl, &sis_impl2);
+
+    println!("diferença entre thomas classico e o meu homemade:");
+    comparacao(&sis_impl3, &sis_impl2);
+    maior_diferenca(&sis_impl3, &sis_impl2);
+
+    let tmax = sistema_impl
+        .meio1
+        .temperaturas
+        .iter()
+        .chain(sistema_impl.meio2.temperaturas.iter())
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    println!("Temperatura máxima implícita: {tmax:.3} °C");
+
+    println!(
+        "u no início do ar: {}",
+        sistema_expl.meio2.velocidade_advectiva[0]
+    );
+    println!(
+        "u no meio do ar: {}",
+        sistema_expl.meio2.velocidade_advectiva[250]
+    );
 
     //plot
-    sistema_expl.plotar("implicito.png", "Método implícito");
+    sistema_impl.plotar("implicito.png", "Método implícito");
 }
 
 #[derive(Clone)]
 struct Meio {
     temperaturas: Vec<f64>,
+    velocidade_advectiva: Vec<f64>,
     material: Material,
 }
 
@@ -146,7 +237,7 @@ impl SistemaTridiagonal {
 enum Material {
     Ferro,
     Cobre,
-    Brazino,
+    Ar(Arc<TabelaAr>),
 }
 
 impl Material {
@@ -154,23 +245,36 @@ impl Material {
         match self {
             Material::Ferro => 10.0 + 0.5 * t,
             Material::Cobre => 15.0 + 0.3 * t,
-            Material::Brazino => 20.0 + 0.1 * t,
+            Material::Ar(tabela) => tabela.consultar(t).k,
         }
     }
 
-    fn get_rho(&self) -> f64 {
+    fn get_rho(&self, t: f64) -> f64 {
         match self {
             Material::Ferro => 7874.0,
             Material::Cobre => 8960.0,
-            Material::Brazino => 5000.0,
+            Material::Ar(tabela) => tabela.consultar(t).rho,
         }
     }
 
-    fn get_cp(&self) -> f64 {
+    fn get_cp(&self, t: f64) -> f64 {
         match self {
             Material::Ferro => 449.0,
             Material::Cobre => 385.0,
-            Material::Brazino => 500.0,
+            Material::Ar(tabela) => tabela.consultar(t).cp,
+        }
+    }
+    fn get_u(&self, x: f64) -> f64 {
+        match self {
+            Material::Ar(_) => {
+                let x_interface = 0.5;
+                let l = 0.02;
+                let u = -0.1;
+
+                let d = (x - x_interface).max(0.0);
+                u * (1.0 - (-d / l).exp())
+            }
+            _ => 0.0,
         }
     }
 }
@@ -180,6 +284,21 @@ impl Meio {
         Self {
             temperaturas: vec![valor; tamanho],
             material: material,
+            velocidade_advectiva: vec![0.0; tamanho],
+        }
+    }
+    fn criar_vetor_advectivo<F>(velocidades: &mut [f64], f: F, dx: f64)
+    where
+        F: Fn(f64) -> f64,
+    {
+        // j: índice do nó, começando em zero.
+        // x_no = (j + 0.5) * dx: posição do centro do nó.
+        // x_face = (j + 1.0) * dx: posição da face direita desse nó.
+        for j in 0..velocidades.len() {
+            // 1. Calcula x_j
+            // 2. Calcula u_j chamando f
+            velocidades[j] = f((j as f64 + 0.5) * dx);
+            // 3. Armazena u_j no vetor}
         }
     }
 }
@@ -215,14 +334,16 @@ impl Sistema {
             //precisar recalcular
             let (q_direita, _) = interface_flux(self, j);
 
-            let rho = mei.material.get_rho();
-            let cp = mei.material.get_cp();
-            let termo_sei_la_o_nome = self.metodo.dt / (rho * cp * self.metodo.dx);
-
             let atualtemp = mei.temperaturas[pos];
 
-            let novatemp = termo_sei_la_o_nome * (q_esquerda - q_direita) + atualtemp;
+            let rho = mei.material.get_rho(atualtemp);
+            let cp = mei.material.get_cp(atualtemp);
+            let termo_sei_la_o_nome = self.metodo.dt / (rho * cp * self.metodo.dx);
 
+            let termo_advectivo = self.adveccao_no(j);
+
+            let novatemp = atualtemp + termo_sei_la_o_nome * (q_esquerda - q_direita)
+                - termo_advectivo * self.metodo.dt;
             q_esquerda = q_direita;
 
             if j < q1 {
@@ -231,21 +352,120 @@ impl Sistema {
                 buffer2[pos] = novatemp
             }
         }
-        //TODO acho que a parada hoje é mudar a saída do código pra dois vetores separados.
     }
 
-    fn coef_implicit(&self, indice_global: usize) -> (f64, f64, f64, f64) {
-        //essa função só vai retornar os coeficientes pra usar em cada posição da matriz
+    //nao usamos isso aqui pelo menos por enquanto
+    //os indices das faces precisam ser tratados e se adequar a lógica do sistema.
+    fn adveccao_face(&self, face: usize) -> f64 {
+        let inicio_ar = self.meio1.temperaturas.len();
+
+        // Sem advecção no sólido nem na interface sólido-fluido
+        if face < inicio_ar {
+            return 0.0;
+        }
+        let (meio, pos_local) = self.indice(face);
+
+        // let j = face - inicio_ar;
+        //
+        // let x = (face + 1) as f64 * self.metodo.dx;
+        //
+        // let u = self.meio2.material.get_u(x);
+        //
+        //u da face tem que ser calculado pela media dos nós pra fazer sentido ter a malha de u!
+        let u =
+            (meio.velocidade_advectiva[pos_local] + meio.velocidade_advectiva[pos_local + 1]) * 0.5;
+
+        //caso muito específico mas que pode economizar processamento
+        if u == 0.0 {
+            return 0.0;
+        }
+
+        // Propriedades congeladas no instante anterior
+        let temp_upwind = if u >= 0.0 {
+            self.meio2.temperaturas[pos_local]
+        } else {
+            self.meio2.temperaturas[pos_local + 1]
+        };
+
+        let cp = self.meio2.material.get_cp(temp_upwind);
+        let rho_ar = meio.material.get_rho(temp_upwind);
+
+        rho_ar * cp * u
+    }
+
+    // u dt/dx bacaninha mais fácil de usar
+    fn adveccao_no(&self, posicao_global: usize) -> f64 {
+        // Não existe advecção no sólido
+        if posicao_global < self.interface {
+            return 0.0;
+        }
+        let (blebleble, posicao) = self.indice(posicao_global);
+        let u = blebleble.velocidade_advectiva[posicao];
+        if u == 0.0 || (posicao == 0 && u > 0.0) {
+            return 0.0;
+        }
+        let dx = self.metodo.dx;
+        if u < 0.0 && posicao + 1 >= blebleble.temperaturas.len() {
+            panic!(
+                "Fora do vetor! global={}, local={}, len={}, u={}",
+                posicao_global,
+                posicao,
+                blebleble.temperaturas.len(),
+                u
+            );
+        }
+        let dt = if u > 0.0 {
+            blebleble.temperaturas[posicao] - blebleble.temperaturas[posicao - 1]
+        } else {
+            blebleble.temperaturas[posicao + 1] - blebleble.temperaturas[posicao]
+        };
+        //let sinal = if u >= 0.0 { 1.0 } else { -1.0 };
+
+        u * dt / dx
+    }
+
+    fn coef_implicit_adv(&self, indice_global: usize) -> (f64, f64, f64, f64) {
         let (meio, indice_local) = self.indice(indice_global);
 
-        let rho = meio.material.get_rho();
-        let cp = meio.material.get_cp();
+        let temp_atual = meio.temperaturas[indice_local];
+        let rho_ar = meio.material.get_rho(temp_atual);
+
+        let rho = if indice_global >= self.meio1.temperaturas.len() {
+            rho_ar
+        } else {
+            meio.material.get_rho(temp_atual)
+        };
+
+        let cp = meio.material.get_cp(temp_atual);
         let capacidade = (rho * cp * self.metodo.dx) / self.metodo.dt;
 
         let (_, ge) = interface_flux(self, indice_global - 1);
         let (_, gd) = interface_flux(self, indice_global);
 
+        // Coeficientes advectivos nas duas interfaces
+        let fe = self.adveccao_face(indice_global - 1);
+        let fd = self.adveccao_face(indice_global);
+
+        let aw = -ge - fe.max(0.0);
+        let ap = capacidade + ge + gd + fd.max(0.0) + (-fe).max(0.0) - (fd - fe);
+        let ae = -gd - (-fd).max(0.0);
+        let b = capacidade * temp_atual;
+
+        (aw, ap, ae, b)
+    }
+
+    //essa função só vai retornar os coeficientes pra usar em cada posição da matriz
+    fn coef_implicit(&self, indice_global: usize) -> (f64, f64, f64, f64) {
+        let (meio, indice_local) = self.indice(indice_global);
+
         let temp_atual = meio.temperaturas[indice_local];
+
+        let rho = meio.material.get_rho(temp_atual);
+        let cp = meio.material.get_cp(temp_atual);
+        let capacidade = (rho * cp * self.metodo.dx) / self.metodo.dt;
+
+        let (_, ge) = interface_flux(self, indice_global - 1);
+        let (_, gd) = interface_flux(self, indice_global);
 
         //aW, aP, aE, b
         (-ge, capacidade + ge + gd, -gd, capacidade * temp_atual)
@@ -255,25 +475,25 @@ impl Sistema {
         let mut novas_temperaturas_meio1 = self.meio1.temperaturas.clone();
         let mut novas_temperaturas_meio2 = self.meio2.temperaturas.clone();
 
-        for i in 0..num_iteracoes {
+        for _ in 0..num_iteracoes {
             self.iteracao(&mut novas_temperaturas_meio1, &mut novas_temperaturas_meio2);
 
             std::mem::swap(&mut self.meio1.temperaturas, &mut novas_temperaturas_meio1);
             std::mem::swap(&mut self.meio2.temperaturas, &mut novas_temperaturas_meio2);
 
             //colocar um if nesse println pra não fazer 1 MELHAO de prints!!
-            let passo = i + 1;
-            if passo % 100000 == 0 {
-                println!(
-                    "iteração {:?}, começo: {:?} fim: {:?}",
-                    i,
-                    &self.meio1.temperaturas[0..5],
-                    &self.meio2.temperaturas[495..500],
-                );
-                //print da interface
-                println!("Fe: {:?}", &self.meio1.temperaturas[495..500]);
-                println!("Cu: {:?}", &self.meio2.temperaturas[0..5]);
-            }
+            // let passo = i + 1;
+            // if passo % 100000 == 0 {
+            //     println!(
+            //         "iteração {:?}, começo: {:?} fim: {:?}",
+            //         i,
+            //         &self.meio1.temperaturas[0..5],
+            //         &self.meio2.temperaturas[495..500],
+            //     );
+            //     //print da interface
+            //     println!("Fe: {:?}", &self.meio1.temperaturas[495..500]);
+            //     println!("Cu: {:?}", &self.meio2.temperaturas[0..5]);
+            // }
         }
     }
 
@@ -291,7 +511,7 @@ impl Sistema {
                 sistema.diagonal_principal[i],
                 sistema.diagonal_superior[i],
                 sistema.b[i],
-            ) = self.coef_implicit(i + 1);
+            ) = self.coef_implicit_adv(i + 1);
         }
 
         let ultima_linha = tamanho - 1;
@@ -305,7 +525,7 @@ impl Sistema {
         sistema.diagonal_superior[ultima_linha] = 0.0;
     }
 
-    //thompsoooooooooonnnnnnnnnnnnnnn
+    //algoritmo de thomas
     fn solver_implicit(&mut self, mut sistema: &mut SistemaTridiagonal, num_iteracoes: usize) {
         let n1 = self.meio1.temperaturas.len();
         let n2 = self.meio2.temperaturas.len();
@@ -344,6 +564,228 @@ impl Sistema {
             self.meio1.temperaturas[1..].copy_from_slice(&sistema.b[..n1 - 1]);
             self.meio2.temperaturas[..n2 - 1].copy_from_slice(&sistema.b[n1 - 1..]);
         }
+    }
+
+    //feito por ia a fim de otimizar o tempo
+    fn solver_implicit_classico(
+        &mut self,
+        _sistema: &mut SistemaTridiagonal,
+        num_iteracoes: usize,
+    ) {
+        let n1 = self.meio1.temperaturas.len();
+        let n2 = self.meio2.temperaturas.len();
+        let n = n1 + n2;
+        assert!(n1 >= 1 && n2 >= 1 && n >= 4);
+
+        let dx = self.metodo.dx;
+        let cap_fator = dx / self.metodo.dt;
+        let dois_sobre_dx = 2.0 / dx;
+
+        // Temperaturas em um vetor contínuo
+        let mut t = Vec::with_capacity(n);
+        t.extend_from_slice(&self.meio1.temperaturas);
+        t.extend_from_slice(&self.meio2.temperaturas);
+
+        // Buffers alocados uma única vez
+        let mut k = vec![0.0; n];
+        let mut rc = vec![0.0; n];
+        let mut g = vec![0.0; n - 1];
+        let mut fl = vec![0.0; n - 1];
+
+        let mut aw = vec![0.0; n];
+        let mut ap = vec![0.0; n];
+        let mut ae = vec![0.0; n];
+        let mut bb = vec![0.0; n];
+
+        let mut c_l = vec![0.0; n];
+        let mut d_l = vec![0.0; n];
+
+        // Velocidades nas faces
+        let mut u_face = vec![0.0; n - 1];
+        let v = &self.meio2.velocidade_advectiva;
+
+        for f in n1..n - 1 {
+            u_face[f] = (v[f - n1] + v[f - n1 + 1]) * 0.5;
+        }
+
+        for _ in 0..num_iteracoes {
+            // 1. Propriedades termofísicas
+            preencher_props(&self.meio1.material, &t[..n1], &mut k[..n1], &mut rc[..n1]);
+
+            preencher_props(&self.meio2.material, &t[n1..], &mut k[n1..], &mut rc[n1..]);
+
+            // 2. Condutâncias e fluxos advectivos
+            for (f, (g, fl)) in g.iter_mut().zip(fl.iter_mut()).enumerate() {
+                let (ka, kb) = (k[f], k[f + 1]);
+
+                *g = dois_sobre_dx * ka * kb / (ka + kb);
+
+                let u = u_face[f];
+                *fl = if u >= 0.0 { rc[f] } else { rc[f + 1] } * u;
+            }
+
+            // 3. Montagem do sistema tridiagonal
+            for i in 1..n - 1 {
+                let (ge, gd) = (g[i - 1], g[i]);
+                let (fe, fd) = (fl[i - 1], fl[i]);
+
+                let cap = rc[i] * cap_fator;
+
+                aw[i] = -ge - fe.max(0.0);
+
+                ap[i] = cap + ge + gd + fd.max(0.0) + (-fe).max(0.0) - (fd - fe);
+
+                ae[i] = -gd - (-fd).max(0.0);
+
+                bb[i] = cap * t[i];
+            }
+
+            // 4. THOMAS CLÁSSICO: eliminação direta
+            let mut cc = 0.0;
+            let mut dd = t[0];
+
+            for i in 1..n - 1 {
+                let inv = 1.0 / (ap[i] - aw[i] * cc);
+
+                cc = ae[i] * inv;
+                dd = (bb[i] - aw[i] * dd) * inv;
+
+                c_l[i] = cc;
+                d_l[i] = dd;
+            }
+
+            // 5. THOMAS CLÁSSICO: substituição regressiva
+            // t[n-1] permanece fixo (condição de contorno)
+            for i in (1..n - 1).rev() {
+                t[i] = d_l[i] - c_l[i] * t[i + 1];
+            }
+        }
+
+        // Atualiza temperaturas
+        self.meio1.temperaturas.copy_from_slice(&t[..n1]);
+        self.meio2.temperaturas.copy_from_slice(&t[n1..]);
+    }
+
+    // ↓ substitui o solver_implicit antigo
+    /// Implícito com advecção: montagem + Thomas fundidos, sem alocação no loop.
+    /// `_tridiag` não é mais usado (fica só pra não mexer no main).
+    fn solver_implicit_claude(&mut self, _tridiag: &mut SistemaTridiagonal, num_iteracoes: usize) {
+        let n1 = self.meio1.temperaturas.len();
+        let n2 = self.meio2.temperaturas.len();
+        let n = n1 + n2;
+        assert!(n1 >= 1 && n2 >= 1 && n >= 4);
+
+        // linhas internas 1..=n-2, divididas em metade de cima (1..=m) e de baixo (m+1..=n-2)
+        let r = n - 2;
+        let h = r / 2;
+        let m = r - h;
+
+        let dx = self.metodo.dx;
+        let cap_fator = dx / self.metodo.dt;
+        let dois_sobre_dx = 2.0 / dx;
+
+        // estado contínuo: as temperaturas ficam num vetor só durante toda a simulação
+        let mut t = Vec::with_capacity(n);
+        t.extend_from_slice(&self.meio1.temperaturas);
+        t.extend_from_slice(&self.meio2.temperaturas);
+
+        // buffers, alocados uma vez
+        let mut k = vec![0.0; n]; // condutividade por nó
+        let mut rc = vec![0.0; n]; // rho*cp por nó
+        let mut g = vec![0.0; n - 1]; // condutância da face f (entre nós f e f+1)
+        let mut fl = vec![0.0; n - 1]; // rho*cp*u upwind na face f
+        let mut aw = vec![0.0; n];
+        let mut ap = vec![0.0; n];
+        let mut ae = vec![0.0; n];
+        let mut bb = vec![0.0; n];
+        let mut c_l = vec![0.0; n]; // coeficientes eliminados (c' em cima, e' embaixo)
+        let mut d_l = vec![0.0; n]; // lado direito eliminado (d' em cima, f' embaixo)
+
+        // u nas faces não depende do tempo: calcula uma vez (zero no sólido e na interface)
+        let mut u_face = vec![0.0; n - 1];
+        let v = &self.meio2.velocidade_advectiva;
+        for f in n1..n - 1 {
+            u_face[f] = (v[f - n1] + v[f - n1 + 1]) * 0.5;
+        }
+
+        for _ in 0..num_iteracoes {
+            // 1) propriedades por nó (cada nó avaliado uma vez só)
+            preencher_props(&self.meio1.material, &t[..n1], &mut k[..n1], &mut rc[..n1]);
+            preencher_props(&self.meio2.material, &t[n1..], &mut k[n1..], &mut rc[n1..]);
+
+            // 2) faces: cada face calculada uma vez e usada pelos dois nós vizinhos.
+            //    g = 1/(dx/2k1 + dx/2k2) = 2 k1 k2 / (dx (k1+k2)) → uma divisão em vez de três
+            for (f, (g, fl)) in g.iter_mut().zip(fl.iter_mut()).enumerate() {
+                let (ka, kb) = (k[f], k[f + 1]);
+                *g = dois_sobre_dx * ka * kb / (ka + kb);
+                let u = u_face[f];
+                *fl = if u >= 0.0 { rc[f] } else { rc[f + 1] } * u;
+            }
+
+            // 3) monta as linhas (laço sem dependência entre iterações → vetoriza)
+            for i in 1..n - 1 {
+                let (ge, gd) = (g[i - 1], g[i]);
+                let (fe, fd) = (fl[i - 1], fl[i]);
+                let cap = rc[i] * cap_fator;
+                aw[i] = -ge - fe.max(0.0);
+                ap[i] = cap + ge + gd + fd.max(0.0) + (-fe).max(0.0) - (fd - fe);
+                ae[i] = -gd - (-fd).max(0.0);
+                bb[i] = cap * t[i];
+            }
+
+            // 4) Thomas "twisted": elimina de cima pra baixo E de baixo pra cima no mesmo laço.
+            //    São duas cadeias de dependência independentes → a CPU executa as duas em
+            //    paralelo e a latência da divisão é escondida pela metade.
+            //    Os nós 0 e n-1 entram como linhas identidade (= condições de contorno).
+            //    Cima (linhas 1..=m):   x_i + c_i x_{i+1} = d_i
+            //    Baixo (linhas m+1..):  x_j + e_j x_{j-1} = f_j   (guardados nos mesmos vetores)
+            let (mut c, mut d) = (0.0, t[0]);
+            let (mut e, mut f) = (0.0, t[n - 1]);
+            for s in 0..h {
+                let i = 1 + s;
+                let inv = 1.0 / (ap[i] - aw[i] * c);
+                c = ae[i] * inv;
+                d = (bb[i] - aw[i] * d) * inv;
+                c_l[i] = c;
+                d_l[i] = d;
+
+                let j = n - 2 - s;
+                let inv = 1.0 / (ap[j] - ae[j] * e);
+                e = aw[j] * inv;
+                f = (bb[j] - ae[j] * f) * inv;
+                c_l[j] = e;
+                d_l[j] = f;
+            }
+            if m > h {
+                // número ímpar de linhas: a metade de cima tem uma a mais
+                let inv = 1.0 / (ap[m] - aw[m] * c);
+                c_l[m] = ae[m] * inv;
+                d_l[m] = (bb[m] - aw[m] * d) * inv;
+            }
+
+            // 5) encontro no meio: resolve o 2x2 das linhas m e m+1
+            let (cm, dm, em, fm) = (c_l[m], d_l[m], c_l[m + 1], d_l[m + 1]);
+            let mut xc = (dm - cm * fm) / (1.0 - cm * em);
+            let mut xb = fm - em * xc;
+            t[m] = xc;
+            t[m + 1] = xb;
+
+            // 6) volta pros dois lados, também intercalada
+            for s in 1..h {
+                let i = m - s;
+                xc = d_l[i] - c_l[i] * xc;
+                t[i] = xc;
+                let j = m + 1 + s;
+                xb = d_l[j] - c_l[j] * xb;
+                t[j] = xb;
+            }
+            if m > h {
+                t[1] = d_l[1] - c_l[1] * xc;
+            }
+        }
+
+        self.meio1.temperaturas.copy_from_slice(&t[..n1]);
+        self.meio2.temperaturas.copy_from_slice(&t[n1..]);
     }
 
     fn plotar(&self, arquivo: &str, titulo: &str) {
@@ -417,7 +859,9 @@ fn interface_flux(sistema: &Sistema, posicao: usize) -> (f64, f64) {
     (q, g)
 }
 
-//TODO: aqui vai a função que junta os dois métodos e compara eles lado a lado de acordo com o
+//esboço
+
+// aqui vai a função que junta os dois métodos e compara eles lado a lado de acordo com o
 //número de iterações no tempo
 //
 //entrada: sistema implicito e sistema explicito. também o número de tempo
@@ -465,4 +909,40 @@ fn maior_diferenca(sisimpl: &Sistema, sisexpl: &Sistema) {
         }
     }
     println!("maior dif global: {:?} posição: {:?}", maior, posicao);
+}
+
+fn benchmark<F: FnOnce()>(iteracoes: usize, funcao: F) {
+    let inicio = Instant::now();
+
+    funcao();
+
+    let tempo = inicio.elapsed().as_secs_f64();
+
+    println!("Tempo de execução: {:.4} s", tempo);
+
+    if iteracoes > 0 {
+        println!(
+            "Tempo por iteração: {:.4} µs",
+            tempo * 1e6 / iteracoes as f64
+        );
+    }
+}
+
+#[inline]
+fn preencher_props(material: &Material, temps: &[f64], k: &mut [f64], rc: &mut [f64]) {
+    match material {
+        Material::Ar(tabela) => {
+            for ((&t, k), rc) in temps.iter().zip(k.iter_mut()).zip(rc.iter_mut()) {
+                let p = tabela.consultar(t);
+                *k = p.k;
+                *rc = p.rho * p.cp;
+            }
+        }
+        m => {
+            for ((&t, k), rc) in temps.iter().zip(k.iter_mut()).zip(rc.iter_mut()) {
+                *k = m.get_k(t);
+                *rc = m.get_rho(t) * m.get_cp(t);
+            }
+        }
+    }
 }
